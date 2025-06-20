@@ -4,7 +4,7 @@ public class SignupFrame extends JFrame {
     public SignupFrame() {
         setTitle("Signup - Airline Reservation");
         setDefaultCloseOperation(JFrame.EXIT_ON_CLOSE);
-        setSize(400, 400);
+        setSize(400, 350);  // Reduced height since role dropdown removed
         setLocationRelativeTo(null);
         setLayout(null);
 
@@ -43,54 +43,60 @@ public class SignupFrame extends JFrame {
         phoneField.setBounds(150, 190, 200, 25);
         add(phoneField);
 
-        JLabel roleLabel = new JLabel("Role:");
-        roleLabel.setBounds(30, 230, 100, 25);
-        add(roleLabel);
-        String[] roles = {"user", "admin"};
-        JComboBox<String> roleBox = new JComboBox<>(roles);
-        roleBox.setBounds(150, 230, 200, 25);
-        add(roleBox);
-
         JButton registerBtn = new JButton("Register");
-        registerBtn.setBounds(130, 280, 120, 30);
+        registerBtn.setBounds(130, 240, 120, 30);
         add(registerBtn);
 
+        JButton backToLoginBtn = new JButton("← Back to Login");
+        backToLoginBtn.setBounds(130, 280, 200, 25);
+        add(backToLoginBtn);
+
+        // Register user with fixed "user" role
         registerBtn.addActionListener(e -> {
             String name = nameField.getText().trim();
             String cnic = cnicField.getText().trim();
             String email = emailField.getText().trim();
             String pass = new String(passField.getPassword());
             String phone = phoneField.getText().trim();
-            String role = roleBox.getSelectedItem().toString();
+            String role = "user";  // Only "user" can signup
 
-            // CNIC length check
+            // Validation:
+            if (name.isEmpty() || cnic.isEmpty() || email.isEmpty() || pass.isEmpty() || phone.isEmpty()) {
+                JOptionPane.showMessageDialog(this, "Please fill all fields.");
+                return;
+            }
+
             if (cnic.length() != 13 || !cnic.matches("\\d+")) {
                 JOptionPane.showMessageDialog(this, "❌ CNIC must be exactly 13 digits.");
                 return;
             }
 
+            if (!email.contains("@")) {
+                JOptionPane.showMessageDialog(this, "Please enter a valid email address containing '@'.");
+                return;
+            }
+
+            if (pass.length() < 8) {
+                JOptionPane.showMessageDialog(this, "Password must be at least 8 characters long.");
+                return;
+            }
+
+            if (phone.length() != 11 || !phone.matches("\\d{11}")) {
+                JOptionPane.showMessageDialog(this, "Phone number must be exactly 11 digits.");
+                return;
+            }
+
             String msg = UserDAO.registerUser(name, cnic, email, pass, phone, role);
             JOptionPane.showMessageDialog(this, msg);
-            if (msg.contains("success")) {
+            if (msg.toLowerCase().contains("success")) {
                 new LoginFrame();
                 dispose();
             }
         });
 
-        registerBtn.addActionListener(e -> {
-            String name = nameField.getText().trim();
-            String cnic = cnicField.getText().trim();
-            String email = emailField.getText().trim();
-            String pass = new String(passField.getPassword());
-            String phone = phoneField.getText().trim();
-            String role = roleBox.getSelectedItem().toString();
-
-            String msg = UserDAO.registerUser(name, cnic, email, pass, phone, role);
-            JOptionPane.showMessageDialog(this, msg);
-            if (msg.contains("success")) {
-                new LoginFrame();
-                dispose();
-            }
+        backToLoginBtn.addActionListener(e -> {
+            new LoginFrame();
+            dispose();
         });
 
         setVisible(true);

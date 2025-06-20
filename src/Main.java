@@ -5,3 +5,4 @@ public class Main {
         SwingUtilities.invokeLater(() -> new LoginFrame().setVisible(true));
     }
 }
+

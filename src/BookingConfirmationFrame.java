@@ -1,93 +1,156 @@
 import javax.swing.*;
 import java.awt.*;
-import java.awt.event.*;
 import java.sql.*;
 
 public class BookingConfirmationFrame extends JFrame {
-    private String seatNumber;
-    private int flightID;
+    private final String seatNumber;
+    private final String seatClass;
+    private final int flightID;
+    private final int userID;
+    private int bookingId = -1;
+    private double amount = 0.0;
 
-    public BookingConfirmationFrame(String seatNumber, int flightID) {
+    public BookingConfirmationFrame(String seatNumber, String seatClass, int flightID, int userID) {
         this.seatNumber = seatNumber;
+        this.seatClass = seatClass;
         this.flightID = flightID;
+        this.userID = userID;
+
         setTitle("Booking Confirmation");
         setSize(400, 300);
         setLocationRelativeTo(null);
         setDefaultCloseOperation(JFrame.DISPOSE_ON_CLOSE);
-        setLayout(new BorderLayout());
+        setLayout(new BorderLayout(10, 10));
 
-        // Show user details and selected seat
-        JPanel detailsPanel = new JPanel();
-        detailsPanel.setLayout(new GridLayout(5, 1));
+        JLabel titleLabel = new JLabel("Booking Confirmation", SwingConstants.CENTER);
+        titleLabel.setFont(new Font("Arial", Font.BOLD, 18));
+        titleLabel.setBorder(BorderFactory.createEmptyBorder(10, 10, 0, 10));
+        add(titleLabel, BorderLayout.NORTH);
 
-        try (Connection conn = DBConnection.getConnection()) {
-            String query = "SELECT FullName, FlightNumber FROM Users WHERE UserID = ?";  // Assuming user details are in Users table
-            PreparedStatement stmt = conn.prepareStatement(query);
-            stmt.setInt(1, 1);  // Get user ID (this should come from the logged-in user session)
-            ResultSet rs = stmt.executeQuery();
+        JPanel detailsPanel = new JPanel(new GridLayout(6, 1, 5, 5));
+        detailsPanel.setBorder(BorderFactory.createEmptyBorder(10, 20, 10, 20));
+        detailsPanel.add(new JLabel("Booking Details:", SwingConstants.CENTER));
+        detailsPanel.add(new JSeparator());
 
-            if (rs.next()) {
-                JLabel nameLabel = new JLabel("Name: " + rs.getString("FullName"));
-                JLabel flightLabel = new JLabel("Flight Number: " + flightID); // Assume Flight Number is passed
-                JLabel seatLabel = new JLabel("Seat Number: " + seatNumber);
-
-                detailsPanel.add(nameLabel);
-                detailsPanel.add(flightLabel);
-                detailsPanel.add(seatLabel);
-            }
-
-        } catch (SQLException e) {
-            e.printStackTrace();
-        }
+        String fullName = getPassengerName(userID);
+        detailsPanel.add(new JLabel("Passenger Name: " + (fullName != null ? fullName : "Not Found")));
+        detailsPanel.add(new JLabel("Flight Number: " + flightID));
+        detailsPanel.add(new JLabel("Seat Number: " + seatNumber));
+        detailsPanel.add(new JLabel("Seat Class: " + seatClass));
 
         add(detailsPanel, BorderLayout.CENTER);
 
-        // Payment Method
-        JPanel paymentPanel = new JPanel();
-        paymentPanel.setLayout(new FlowLayout());
+        JPanel buttonPanel = new JPanel(new FlowLayout(FlowLayout.CENTER, 10, 10));
+        JButton managePaymentButton = new JButton("Proceed to Payment");
+        buttonPanel.add(managePaymentButton);
+        add(buttonPanel, BorderLayout.SOUTH);
 
-        JLabel cardLabel = new JLabel("Enter Card Number:");
-        JTextField cardField = new JTextField(16);  // For card number
-        JButton payButton = new JButton("Pay");
-
-        payButton.addActionListener(new ActionListener() {
-            @Override
-            public void actionPerformed(ActionEvent e) {
-                // Process payment (always successful)
-                JOptionPane.showMessageDialog(BookingConfirmationFrame.this,
-                        "Payment successful! Seat " + seatNumber + " is now reserved.");
-                reserveSeat();
-                dispose();  // Close the booking confirmation window
+        SwingUtilities.invokeLater(() -> {
+            if (isSeatAvailable()) {
+                bookingId = insertPendingBooking();
+                if (bookingId != -1) {
+                    amount = getPriceForFlight(flightID);
+                    if ("Business".equalsIgnoreCase(seatClass)) {
+                        amount += 5000;
+                    }
+                } else {
+                    JOptionPane.showMessageDialog(this, "Error creating booking record.", "Error", JOptionPane.ERROR_MESSAGE);
+                    dispose();
+                }
+            } else {
+                JOptionPane.showMessageDialog(this,
+                        "Sorry, this seat has been booked by another user. Please select a different seat.",
+                        "Seat No Longer Available",
+                        JOptionPane.WARNING_MESSAGE);
+                new SeatSelectionFrame(flightID, userID);
+                dispose();
             }
         });
 
-        paymentPanel.add(cardLabel);
-        paymentPanel.add(cardField);
-        paymentPanel.add(payButton);
-
-        add(paymentPanel, BorderLayout.SOUTH);
+        managePaymentButton.addActionListener(e -> {
+            if (bookingId != -1) {
+                PaymentDialogue paymentDialogue = new PaymentDialogue(this, bookingId, amount, userID, seatNumber);
+                paymentDialogue.setModal(true);
+                paymentDialogue.setVisible(true);
+                checkAndFinalizeBooking();
+                dispose();
+            } else {
+                JOptionPane.showMessageDialog(this,
+                        "Cannot proceed to payment. Please try again.",
+                        "Error",
+                        JOptionPane.ERROR_MESSAGE);
+            }
+        });
 
         setVisible(true);
     }
 
-    private void reserveSeat() {
-        // Reserve the seat in the database
+    private boolean isSeatAvailable() {
         try (Connection conn = DBConnection.getConnection()) {
-            String updateQuery = "UPDATE Seats SET IsAvailable = 0 WHERE FlightID = ? AND SeatNumber = ?";
-            PreparedStatement stmt = conn.prepareStatement(updateQuery);
+            String query = "EXEC CheckSeat ?, ?";
+            PreparedStatement stmt = conn.prepareStatement(query);
             stmt.setInt(1, flightID);
             stmt.setString(2, seatNumber);
-
-            int rowsUpdated = stmt.executeUpdate();
-            if (rowsUpdated > 0) {
-                System.out.println("Seat reserved successfully.");
-            }
+            ResultSet rs = stmt.executeQuery();
+            if (rs.next()) return rs.getBoolean("IsAvailable");
         } catch (SQLException e) {
-            e.printStackTrace();
+            showError("Error checking seat availability.", e);
+        }
+        return false;
+    }
+
+    private String getPassengerName(int userID) {
+        try (Connection conn = DBConnection.getConnection()) {
+            String query = "EXEC GetPassengerName ?";
+            PreparedStatement stmt = conn.prepareStatement(query);
+            stmt.setInt(1, userID);
+            ResultSet rs = stmt.executeQuery();
+            if (rs.next()) return rs.getString("FullName");
+        } catch (SQLException e) {
+            showError("Error fetching passenger name.", e);
+        }
+        return null;
+    }
+
+    private int insertPendingBooking() {
+        try (Connection conn = DBConnection.getConnection()) {
+            String query = "EXEC InsertPendingBooking ?, ?";
+            PreparedStatement stmt = conn.prepareStatement(query);
+            stmt.setInt(1, userID);
+            stmt.setInt(2, flightID);
+            ResultSet rs = stmt.executeQuery();
+            if (rs.next()) return rs.getInt("BookingID");
+        } catch (SQLException e) {
+            showError("Failed to insert booking.", e);
+        }
+        return -1;
+    }
+
+    private double getPriceForFlight(int flightID) {
+        try (Connection conn = DBConnection.getConnection()) {
+            String query = "EXEC GetFlightPrice ?";
+            PreparedStatement stmt = conn.prepareStatement(query);
+            stmt.setInt(1, flightID);
+            ResultSet rs = stmt.executeQuery();
+            if (rs.next()) return rs.getDouble("Price");
+        } catch (SQLException e) {
+            showError("Error fetching flight price.", e);
+        }
+        return 0.0;
+    }
+
+    private void checkAndFinalizeBooking() {
+        try (Connection conn = DBConnection.getConnection()) {
+            String query = "EXEC CheckBookingStatus ?";
+            PreparedStatement stmt = conn.prepareStatement(query);
+            stmt.setInt(1, bookingId);
+        } catch (SQLException e) {
+            showError("Error checking booking status.", e);
         }
     }
 
-    public static void main(String[] args) {
-        new BookingConfirmationFrame("A1", 101);  // Sample seat and flight ID
+    private void showError(String message, Exception e) {
+        e.printStackTrace();
+        JOptionPane.showMessageDialog(this, message, "Database Error", JOptionPane.ERROR_MESSAGE);
     }
 }

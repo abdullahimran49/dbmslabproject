@@ -3,8 +3,8 @@ import java.sql.DriverManager;
 
 public class DBConnection {
     private static final String URL = "jdbc:sqlserver://localhost:1433;databaseName=AirlineReservationSystem;encrypt=true;trustServerCertificate=true";
-    private static final String USER = "sa";
-    private static final String PASSWORD = "abdullah";
+    private static final String USER = "**";
+    private static final String PASSWORD = "********";
 
     public static Connection getConnection() {
         try {

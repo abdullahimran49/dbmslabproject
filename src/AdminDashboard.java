@@ -1,23 +1,45 @@
 import javax.swing.*;
+import java.awt.*;
 
 public class AdminDashboard extends JFrame {
 
+    private final JButton logoutButton;
+
     public AdminDashboard() {
-        setTitle("Admin Dashboard");
-        setSize(400, 400);
+        setTitle("Admin Dashboard - Manage Flights, Bookings, Users, and Airlines");
+        setSize(1000, 600);
         setLocationRelativeTo(null);
-        setDefaultCloseOperation(JFrame.EXIT_ON_CLOSE);
+        setDefaultCloseOperation(EXIT_ON_CLOSE);
+        setLayout(new BorderLayout());
 
-        // Add Admin dashboard content here, such as flight management, user management, etc.
-        JLabel welcomeLabel = new JLabel("Welcome to the Admin Dashboard");
-        welcomeLabel.setBounds(100, 100, 200, 30);
-        add(welcomeLabel);
+        // --- Top panel with logout button aligned to right ---
+        logoutButton = new JButton("Logout");
+        logoutButton.setFocusable(false);
+        logoutButton.setMargin(new Insets(5, 15, 5, 15));
+        logoutButton.addActionListener(e -> {
+            dispose();       // Close dashboard
+            new LoginFrame(); // Open login window
+        });
 
-        setLayout(null);
-        setVisible(true);
+        JPanel topPanel = new JPanel(new FlowLayout(FlowLayout.RIGHT));
+        topPanel.add(logoutButton);
+        add(topPanel, BorderLayout.NORTH);
+
+        // --- Center panel with tabbed pane ---
+        JTabbedPane tabbedPane = new JTabbedPane();
+        tabbedPane.addTab("Airlines", new AirlineManagement());
+        tabbedPane.addTab("Flights", new FlightManagement());
+        tabbedPane.addTab("Bookings", new BookingManagement());
+        tabbedPane.addTab("Users", new UserManagement());
+
+
+        add(tabbedPane, BorderLayout.CENTER);
     }
 
     public static void main(String[] args) {
-        new AdminDashboard();
+        SwingUtilities.invokeLater(() -> {
+            AdminDashboard adminDashboard = new AdminDashboard();
+            adminDashboard.setVisible(true);
+        });
     }
 }

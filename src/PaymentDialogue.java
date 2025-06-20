@@ -1,119 +1,291 @@
 import javax.swing.*;
 import java.awt.*;
-import java.sql.Connection;
-import java.sql.Date;
-import java.sql.PreparedStatement;
-import java.sql.ResultSet;
+import java.sql.*;
+import java.util.Calendar;
 
 public class PaymentDialogue extends JDialog {
-    private JTextField cardNumberField, expiryDateField, cardTypeField;
-    private final int userId, seatId, flightId;
+    private final int bookingId, userId;
     private final double amount;
+    private final String seatNumber;
+    private JComboBox<PaymentMethod> paymentCombo;
+    private JTextField cardNumberField, cardTypeField, expiryField;
+    private boolean paymentSuccessful = false;
 
-    public PaymentDialogue(JFrame parent, int userId, int seatId, int flightId, double amount) {
-        super(parent, "Enter Card Details", true);
-        this.userId = userId;
-        this.seatId = seatId;
-        this.flightId = flightId;
+    public PaymentDialogue(JFrame parent, int bookingId, double amount, int userId, String seatNumber) {
+        super(parent, "Payment", true);
+        this.bookingId = bookingId;
         this.amount = amount;
+        this.userId = userId;
+        this.seatNumber = seatNumber;
 
-        setLayout(new GridLayout(5, 2, 10, 10));
-        setSize(400, 250);
-        setLocationRelativeTo(parent);
+        setupUI();
+        loadPaymentMethods();
+    }
 
-        add(new JLabel("Card Number:"));
-        cardNumberField = new JTextField();
-        add(cardNumberField);
+    private void setupUI() {
+        setSize(400, 300);
+        setLocationRelativeTo(getParent());
+        setLayout(new BorderLayout());
 
-        add(new JLabel("Card Type (Visa/Master):"));
-        cardTypeField = new JTextField();
-        add(cardTypeField);
+        JPanel form = new JPanel(new GridLayout(6, 2, 5, 5));
+        form.setBorder(BorderFactory.createEmptyBorder(20, 20, 20, 20));
 
-        add(new JLabel("Expiry Date (YYYY-MM-DD):"));
-        expiryDateField = new JTextField();
-        add(expiryDateField);
+        form.add(new JLabel("Amount:"));
+        form.add(new JLabel("PKR " + String.format("%,.2f", amount)));
 
-        JButton payButton = new JButton("Pay & Book");
-        payButton.addActionListener(e -> processPayment());
-        add(payButton);
+        form.add(new JLabel("Payment Method:"));
+        paymentCombo = new JComboBox<>();
+        paymentCombo.addActionListener(e -> updateFields());
+        form.add(paymentCombo);
 
-        setVisible(true);
+        form.add(new JLabel("Card Number:"));
+        form.add(cardNumberField = new JTextField());
+
+        form.add(new JLabel("Card Type:"));
+        form.add(cardTypeField = new JTextField());
+
+        form.add(new JLabel("Expiry (MM/YYYY):"));
+        form.add(expiryField = new JTextField());
+
+        JPanel buttons = new JPanel();
+        JButton addNew = new JButton("Add New");
+        addNew.addActionListener(e -> clearFields());
+
+        JButton pay = new JButton("Pay");
+        pay.addActionListener(e -> processPayment());
+
+        JButton cancel = new JButton("Cancel");
+        cancel.addActionListener(e -> dispose());
+
+        buttons.add(addNew);
+        buttons.add(pay);
+        buttons.add(cancel);
+
+        add(form, BorderLayout.CENTER);
+        add(buttons, BorderLayout.SOUTH);
+    }
+
+    private void loadPaymentMethods() {
+        paymentCombo.removeAllItems();
+        try (Connection conn = DBConnection.getConnection();
+             CallableStatement stmt = conn.prepareCall("{call GetUserPaymentMethods(?)}")) {
+
+            stmt.setInt(1, userId);
+            ResultSet rs = stmt.executeQuery();
+
+            while (rs.next()) {
+                paymentCombo.addItem(new PaymentMethod(
+                        rs.getInt("PaymentMethodID"),
+                        rs.getString("CardNumber"),
+                        rs.getString("CardType"),
+                        rs.getDate("ExpiryDate")
+                ));
+            }
+        } catch (SQLException e) {
+            showError("Error loading payment methods: " + e.getMessage());
+        }
+    }
+
+    private void updateFields() {
+        PaymentMethod pm = (PaymentMethod) paymentCombo.getSelectedItem();
+        boolean hasSelection = pm != null;
+
+        if (hasSelection) {
+            cardNumberField.setText(pm.cardNumber);
+            cardTypeField.setText(pm.cardType);
+            if (pm.expiryDate != null) {
+                Calendar cal = Calendar.getInstance();
+                cal.setTime(pm.expiryDate);
+                expiryField.setText(String.format("%02d/%04d",
+                        cal.get(Calendar.MONTH) + 1, cal.get(Calendar.YEAR)));
+            }
+        }
+
+        cardNumberField.setEditable(!hasSelection);
+        cardTypeField.setEditable(!hasSelection);
+        expiryField.setEditable(!hasSelection);
+    }
+
+    private void clearFields() {
+        paymentCombo.setSelectedIndex(-1);
+        cardNumberField.setText("");
+        cardTypeField.setText("");
+        expiryField.setText("");
+        cardNumberField.setEditable(true);
+        cardTypeField.setEditable(true);
+        expiryField.setEditable(true);
     }
 
     private void processPayment() {
-        String cardNum = cardNumberField.getText().trim();
-        String cardType = cardTypeField.getText().trim();
-        String expiry = expiryDateField.getText().trim();
-
-        if (!cardNum.matches("\\d{16}") || !expiry.matches("\\d{4}-\\d{2}-\\d{2}")) {
-            JOptionPane.showMessageDialog(this, "Invalid card details");
+        if (seatNumber == null || seatNumber.trim().isEmpty()) {
+            showError("Seat number not set.");
             return;
         }
 
-        try (Connection conn = DBConnection.getConnection()) {
-            conn.setAutoCommit(false); // Start transaction
+        int flightId = executeCall("{call GetBookingFlightInfo(?, ?)}", bookingId);
+        if (flightId == -1) {
+            showError("Could not find booking information.");
+            return;
+        }
 
-            // 1. Insert/Check PaymentMethod
-            PreparedStatement checkCard = conn.prepareStatement(
-                    "SELECT PaymentMethodID FROM PaymentMethods WHERE CardNumber = ? AND UserID = ?");
-            checkCard.setString(1, cardNum);
-            checkCard.setInt(2, userId);
-            ResultSet rs = checkCard.executeQuery();
+        int paymentMethodId = getPaymentMethodId();
+        if (paymentMethodId == -1) return;
 
-            int paymentMethodId;
-            if (rs.next()) {
-                paymentMethodId = rs.getInt("PaymentMethodID");
-            } else {
-                PreparedStatement insertCard = conn.prepareStatement(
-                        "INSERT INTO PaymentMethods (UserID, CardNumber, CardType, ExpiryDate) OUTPUT INSERTED.PaymentMethodID VALUES (?, ?, ?, ?)");
-                insertCard.setInt(1, userId);
-                insertCard.setString(2, cardNum);
-                insertCard.setString(3, cardType);
-                insertCard.setDate(4, Date.valueOf(expiry));
-                ResultSet cardRs = insertCard.executeQuery();
-                cardRs.next();
-                paymentMethodId = cardRs.getInt(1);
-            }
-
-            // 2. Create Booking
-            PreparedStatement insertBooking = conn.prepareStatement(
-                    "INSERT INTO Bookings (UserID, FlightID, TotalAmount, Status) OUTPUT INSERTED.BookingID VALUES (?, ?, ?, ?)");
-            insertBooking.setInt(1, userId);
-            insertBooking.setInt(2, flightId);
-            insertBooking.setDouble(3, amount);
-            insertBooking.setString(4, "Confirmed");
-            ResultSet bookingRs = insertBooking.executeQuery();
-            bookingRs.next();
-            int bookingId = bookingRs.getInt(1);
-
-            // 3. Book Seat
-            PreparedStatement bookSeat = conn.prepareStatement(
-                    "INSERT INTO BookedSeats (BookingID, SeatID) VALUES (?, ?)");
-            bookSeat.setInt(1, bookingId);
-            bookSeat.setInt(2, seatId);
-            bookSeat.executeUpdate();
-
-            // 4. Mark Seat Unavailable
-            PreparedStatement updateSeat = conn.prepareStatement(
-                    "UPDATE Seats SET IsAvailable = 0 WHERE SeatID = ?");
-            updateSeat.setInt(1, seatId);
-            updateSeat.executeUpdate();
-
-            // 5. Insert Payment
-            PreparedStatement insertPayment = conn.prepareStatement(
-                    "INSERT INTO Payments (BookingID, PaymentMethodID, Amount, Status) VALUES (?, ?, ?, 'Paid')");
-            insertPayment.setInt(1, bookingId);
-            insertPayment.setInt(2, paymentMethodId);
-            insertPayment.setDouble(3, amount);
-            insertPayment.executeUpdate();
-
-            conn.commit();
-            JOptionPane.showMessageDialog(this, "Booking Confirmed! Thank you for your payment.");
+        if (executePaymentFlow(paymentMethodId, flightId, seatNumber)) {
+            paymentSuccessful = true;
+            JOptionPane.showMessageDialog(this, "Payment successful! Booking confirmed.");
             dispose();
+        }
+    }
 
-        } catch (Exception ex) {
-            ex.printStackTrace();
-            JOptionPane.showMessageDialog(this, "Transaction failed. Try again.");
+    private int getPaymentMethodId() {
+        PaymentMethod selected = (PaymentMethod) paymentCombo.getSelectedItem();
+        if (selected != null) return selected.id;
+
+        if (cardNumberField.getText().trim().isEmpty()) {
+            showError("Please select a payment method or enter card details.");
+            return -1;
+        }
+
+        return saveNewPaymentMethod();
+    }
+
+    private int saveNewPaymentMethod() {
+        try {
+            Date sqlDate = parseExpiryDate();
+            if (sqlDate == null && !expiryField.getText().trim().isEmpty()) return -1;
+
+            try (Connection conn = DBConnection.getConnection()) {
+                executeStoredProc(conn, "{call ManageUserPaymentMethod(?, ?, ?, ?, ?, ?)}",
+                        "insert", null, userId, cardNumberField.getText(),
+                        cardTypeField.getText(), sqlDate);
+
+                int newId = executeCall("{call GetLatestPaymentMethodID(?, ?, ?)}",
+                        userId, cardNumberField.getText());
+                loadPaymentMethods();
+                return newId;
+            }
+        } catch (SQLException e) {
+            showError("Database error: " + e.getMessage());
+        }
+        return -1;
+    }
+
+    private Date parseExpiryDate() {
+        String expiry = expiryField.getText().trim();
+        if (expiry.isEmpty()) return null;
+
+        try {
+            String[] parts = expiry.split("/");
+            if (parts.length != 2) throw new IllegalArgumentException("Invalid format");
+
+            Calendar cal = Calendar.getInstance();
+            cal.set(Integer.parseInt(parts[1]), Integer.parseInt(parts[0]) - 1, 1);
+            return new Date(cal.getTimeInMillis());
+        } catch (Exception e) {
+            showError("Invalid expiry date format. Use MM/YYYY");
+            return null;
+        }
+    }
+
+    private boolean executePaymentFlow(int paymentMethodId, int flightId, String seatNumber) {
+        if (!executeBoolCall("{call CheckSeatAvailability(?, ?, ?)}", flightId, seatNumber)) {
+            showError("Seat no longer available.");
+            return false;
+        }
+
+        if (!executeBoolCall("{call RecordPayment(?, ?, ?, ?)}", bookingId, paymentMethodId, amount) ||
+                !executeBoolCall("{call UpdateBookingAmount(?, ?, ?)}", bookingId, amount) ||
+                !executeBoolCall("{call ReserveSeat(?, ?, ?)}", flightId, seatNumber)) {
+            rollback();
+            return false;
+        }
+
+        int seatId = executeCall("{call GetSeatID(?, ?, ?)}", flightId, seatNumber);
+        if (seatId == -1 ||
+                !executeBoolCall("{call LinkSeatToBooking(?, ?, ?)}", bookingId, seatId) ||
+                !executeBoolCall("{call UpdateBookingStatus(?, ?, ?)}", bookingId, "Confirmed")) {
+            rollback();
+            return false;
+        }
+
+        return true;
+    }
+
+    private void rollback() {
+        try (Connection conn = DBConnection.getConnection()) {
+            executeStoredProc(conn, "{call RemovePaymentRecord(?, ?)}", bookingId);
+            executeStoredProc(conn, "{call RemoveBookedSeatLink(?, ?)}", bookingId);
+        } catch (SQLException e) {
+            e.printStackTrace();
+        }
+    }
+
+    private int executeCall(String sql, Object... params) {
+        try (Connection conn = DBConnection.getConnection();
+             CallableStatement stmt = conn.prepareCall(sql)) {
+
+            for (int i = 0; i < params.length; i++) {
+                stmt.setObject(i + 1, params[i]);
+            }
+            stmt.registerOutParameter(params.length + 1, Types.INTEGER);
+            stmt.execute();
+            return stmt.getInt(params.length + 1);
+        } catch (SQLException e) {
+            e.printStackTrace();
+            return -1;
+        }
+    }
+
+    private boolean executeBoolCall(String sql, Object... params) {
+        try (Connection conn = DBConnection.getConnection();
+             CallableStatement stmt = conn.prepareCall(sql)) {
+
+            for (int i = 0; i < params.length; i++) {
+                stmt.setObject(i + 1, params[i]);
+            }
+            stmt.registerOutParameter(params.length + 1, Types.BIT);
+            stmt.execute();
+            return stmt.getBoolean(params.length + 1);
+        } catch (SQLException e) {
+            e.printStackTrace();
+            return false;
+        }
+    }
+
+    private void executeStoredProc(Connection conn, String sql, Object... params) throws SQLException {
+        try (CallableStatement stmt = conn.prepareCall(sql)) {
+            for (int i = 0; i < params.length; i++) {
+                stmt.setObject(i + 1, params[i]);
+            }
+            stmt.execute();
+        }
+    }
+
+    private void showError(String message) {
+        JOptionPane.showMessageDialog(this, message, "Error", JOptionPane.ERROR_MESSAGE);
+    }
+
+    public boolean isPaymentSuccessful() {
+        return paymentSuccessful;
+    }
+
+    static class PaymentMethod {
+        final int id;
+        final String cardNumber, cardType;
+        final Date expiryDate;
+
+        PaymentMethod(int id, String cardNumber, String cardType, Date expiryDate) {
+            this.id = id;
+            this.cardNumber = cardNumber;
+            this.cardType = cardType;
+            this.expiryDate = expiryDate;
+        }
+
+        @Override
+        public String toString() {
+            String masked = "xxxx-xxxx-xxxx-" + cardNumber.substring(Math.max(0, cardNumber.length() - 4));
+            return masked + " (" + cardType + ")";
         }
     }
 }

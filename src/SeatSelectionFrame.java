@@ -1,6 +1,5 @@
 import javax.swing.*;
 import java.awt.*;
-import java.awt.event.*;
 import java.sql.*;
 import java.util.HashMap;
 import java.util.Map;
@@ -10,83 +9,125 @@ public class SeatSelectionFrame extends JFrame {
     private Map<String, JButton> seatButtons = new HashMap<>();
     private String selectedSeatNumber = null;
     private JButton selectedButton = null;
+    private int userID;
+    private Map<String, String> seatClasses = new HashMap<>();
 
-    public SeatSelectionFrame(int flightID) {
+    public SeatSelectionFrame(int flightID, int userID) {
         this.flightID = flightID;
+        this.userID = userID;
+
         setTitle("Seat Selection");
-        setSize(400, 400);
+        setSize(500, 550);
         setLocationRelativeTo(null);
         setDefaultCloseOperation(JFrame.DISPOSE_ON_CLOSE);
-        setLayout(new GridLayout(10, 3));  // Adjust as needed
+        setLayout(new BorderLayout());
 
-        loadSeatMap();
+        // Legend Panel
+        JPanel legendPanel = new JPanel(new FlowLayout(FlowLayout.LEFT));
+        legendPanel.setBorder(BorderFactory.createTitledBorder("Legend"));
+
+        legendPanel.add(createColorLabel(Color.GREEN, "Economy (Available)"));
+        legendPanel.add(createColorLabel(Color.LIGHT_GRAY, "Economy (Booked)"));
+        legendPanel.add(createColorLabel(Color.ORANGE, "Business (Available)"));
+        legendPanel.add(createColorLabel(new Color(153, 0, 0), "Business (Booked)")); // Dark red
+        legendPanel.add(createColorLabel(Color.BLUE, "Selected Seat"));
+
+        add(legendPanel, BorderLayout.NORTH);
+
+        // Seat Grid Panel
+        JPanel seatGridPanel = new JPanel(new GridLayout(10, 3, 5, 5));
+        add(seatGridPanel, BorderLayout.CENTER);
+
+        loadSeatMap(seatGridPanel);
 
         setVisible(true);
     }
 
-    private void loadSeatMap() {
+    private JLabel createColorLabel(Color color, String text) {
+        JLabel label = new JLabel(text);
+        label.setOpaque(true);
+        label.setBackground(color);
+        label.setBorder(BorderFactory.createLineBorder(Color.BLACK));
+        label.setPreferredSize(new Dimension(150, 25));
+
+        // Automatically use white text for dark backgrounds
+        if (isDarkColor(color)) {
+            label.setForeground(Color.WHITE);
+        }
+
+        return label;
+    }
+
+    private boolean isDarkColor(Color color) {
+        double luminance = (0.299 * color.getRed() + 0.587 * color.getGreen() + 0.114 * color.getBlue()) / 255;
+        return luminance < 0.5;
+    }
+
+    private void loadSeatMap(JPanel seatGridPanel) {
         try (Connection conn = DBConnection.getConnection()) {
-            String query = "SELECT SeatNumber, Class, IsAvailable FROM Seats WHERE FlightID = ?";
-            PreparedStatement stmt = conn.prepareStatement(query);
+            CallableStatement stmt = conn.prepareCall("{CALL GetSeatsByFlightID(?)}");
             stmt.setInt(1, flightID);
             ResultSet rs = stmt.executeQuery();
 
             while (rs.next()) {
                 String seatNumber = rs.getString("SeatNumber");
+                String seatClass = rs.getString("Class");
                 boolean isAvailable = rs.getBoolean("IsAvailable");
 
                 JButton seatButton = new JButton(seatNumber);
                 seatButton.setEnabled(isAvailable);
-                seatButton.setBackground(isAvailable ? Color.GREEN : Color.RED);
+
+                if (seatClass.equalsIgnoreCase("Economy")) {
+                    seatButton.setBackground(isAvailable ? Color.GREEN : Color.LIGHT_GRAY);
+                } else if (seatClass.equalsIgnoreCase("Business")) {
+                    seatButton.setBackground(isAvailable ? Color.ORANGE : new Color(153, 0, 0));
+                    seatButton.setForeground(Color.WHITE);
+                }
+
+                seatClasses.put(seatNumber, seatClass);
 
                 if (isAvailable) {
                     seatButton.addActionListener(e -> handleSeatSelection(seatNumber, seatButton));
                 }
 
                 seatButtons.put(seatNumber, seatButton);
-                add(seatButton);
+                seatGridPanel.add(seatButton);
             }
         } catch (SQLException e) {
             e.printStackTrace();
         }
     }
 
+
     private void handleSeatSelection(String seatNumber, JButton button) {
-        // Deselect previously selected
         if (selectedButton != null) {
-            selectedButton.setBackground(Color.GREEN);
-            selectedButton.setEnabled(true);
+            String prevClass = seatClasses.get(selectedSeatNumber);
+            if (prevClass.equalsIgnoreCase("Economy")) {
+                selectedButton.setBackground(Color.GREEN);
+            } else {
+                selectedButton.setBackground(Color.ORANGE);
+                selectedButton.setForeground(Color.BLACK);
+            }
         }
 
-        // Ask for confirmation
         int confirm = JOptionPane.showConfirmDialog(this,
-                "Do you want to reserve seat " + seatNumber + "?",
-                "Confirm Seat",
+                "Are you sure you want to select seat " + seatNumber + "?",
+                "Confirm Seat Selection",
                 JOptionPane.YES_NO_OPTION);
 
         if (confirm == JOptionPane.YES_OPTION) {
             selectedSeatNumber = seatNumber;
             selectedButton = button;
             selectedButton.setBackground(Color.BLUE);
-            selectedButton.setEnabled(false);
+            selectedButton.setForeground(Color.WHITE);
+
+            String seatClass = seatClasses.get(selectedSeatNumber);
 
             JOptionPane.showMessageDialog(this,
-                    "Seat " + seatNumber + " temporarily reserved.\nProceed to payment to confirm booking.");
+                    seatClass + " Seat " + seatNumber + " selected. Proceed to complete your booking.");
 
-            // Proceed to booking confirmation and payment
-            new BookingConfirmationFrame(selectedSeatNumber, flightID);
-            dispose(); // Close the current frame
-        } else {
-            selectedSeatNumber = null;
-            selectedButton = null;
+            new BookingConfirmationFrame(selectedSeatNumber, seatClass, flightID, userID);
+            dispose();
         }
-    }
-
-    public String getSelectedSeatNumber() {
-        return selectedSeatNumber;
-    }
-
-    public static void main(String[] args) {
-        new SeatSelectionFrame(5);  // Replace with real flightID
     }
 }
